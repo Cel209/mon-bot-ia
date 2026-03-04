@@ -199,9 +199,9 @@ def perform_gacha_pulls(table, pulls):
 async def apply_gacha_rewards(interaction, results):
     uid = interaction.user.id
     guild = interaction.guild
-    if not guild: return
+    if not guild: return []
     member = guild.get_member(uid)
-    if not member: return
+    if not member: return []
 
     now = time.time()
     mentions_list = []
@@ -267,11 +267,17 @@ class Puissance4View(discord.ui.View):
     def is_full(self):
         return all(self.board[0][c] != 0 for c in range(7))
 
-    def drop_piece(self, col, player):
+    def get_drop_row(self, col):
         for r in range(5, -1, -1):
             if self.board[r][col] == 0:
-                self.board[r][col] = player
-                return True
+                return r
+        return -1
+
+    def drop_piece(self, col, player):
+        r = self.get_drop_row(col)
+        if r != -1:
+            self.board[r][col] = player
+            return True
         return False
 
     def render_board(self):
@@ -296,11 +302,15 @@ class Puissance4View(discord.ui.View):
         
         if self.check_win(1):
             self.game_over = True
-            uid_str = str(self.user.id)
-            gacha_data["manual_tickets"][uid_str] = gacha_data.get("manual_tickets", {}).get(uid_str, 0) + 1
-            save_data(GACHA_FILE, gacha_data)
-            embed = discord.Embed(title="🔴 Victoire !", description=f"{self.render_board()}\n\n🎁 Tu as gagné **1 Ticket Ultra** !", color=0x00FF00)
             self.clear_items()
+            
+            results = perform_gacha_pulls(GACHA_STANDARD, 1)
+            mentions = await apply_gacha_rewards(interaction, results)
+            pts = results[0]["score"]
+            update_gacha_score(str(self.user.id), pts)
+            
+            desc = f"{self.render_board()}\n\n🎁 **Victoire !** Tu as gagné un Tirage Simple :\n🔸 {mentions[0]} (+{pts} pts)"
+            embed = discord.Embed(title="🔴 Victoire !", description=desc, color=0x00FF00)
             await interaction.response.edit_message(embed=embed, view=self)
             return
 
@@ -312,7 +322,31 @@ class Puissance4View(discord.ui.View):
             return
 
         valid_cols = [c for c in range(7) if self.board[0][c] == 0]
-        bot_col = random.choice(valid_cols)
+        bot_col = None
+        
+        # 1. Vérifier si le bot peut gagner
+        for c in valid_cols:
+            r = self.get_drop_row(c)
+            self.board[r][c] = 2
+            if self.check_win(2):
+                bot_col = c
+            self.board[r][c] = 0
+            if bot_col is not None: break
+            
+        # 2. Vérifier si le joueur va gagner et bloquer
+        if bot_col is None:
+            for c in valid_cols:
+                r = self.get_drop_row(c)
+                self.board[r][c] = 1
+                if self.check_win(1):
+                    bot_col = c
+                self.board[r][c] = 0
+                if bot_col is not None: break
+                
+        # 3. Aléatoire
+        if bot_col is None:
+            bot_col = random.choice(valid_cols)
+            
         self.drop_piece(bot_col, 2)
 
         if self.check_win(2):
@@ -597,7 +631,7 @@ async def premium(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=v, ephemeral=True)
 
 # ====================================================
-#               COMMANDES ADMIN & UTILITAIRES
+#               UTILITAIRES & ADMIN
 # ====================================================
 @bot.tree.command(name="admin_cheat", description="⚠️ Abuse (Owner) : Donne 100 tickets et 50k points")
 async def admin_cheat(interaction: discord.Interaction, user: discord.Member):
